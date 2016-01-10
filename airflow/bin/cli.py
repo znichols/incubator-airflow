@@ -319,8 +319,6 @@ def webserver(args):
                 args.port, args.hostname))
         app.run(debug=True, port=args.port, host=args.hostname)
     else:
-        if os.path.isfile("/var/run/airflow-webserver.pid"):
-            print("")
         print(
             'Running the Gunicorn server with {workers} {args.workerclass}'
             'workers on host {args.hostname} and port '
