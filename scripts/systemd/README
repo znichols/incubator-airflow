@@ -1,4 +1,6 @@
-The systemd files in this directory are tested on RedHat based systems. Copy (or link) them to /usr/lib/systemd/system.
+The systemd files in this directory are tested on RedHat based systems. Copy (or link) them to /usr/lib/systemd/system
+and copy the tmpfiles.d-airflow.conf to /etc/tmpfiles.d/ or /usr/lib/tmpfiles.d/.
+
 You can then start the different servers by using systemctl start <service>. Enabling services can be done by issuing
  systemctl enable <service>.
 
