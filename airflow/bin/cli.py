@@ -319,6 +319,8 @@ def webserver(args):
                 args.port, args.hostname))
         app.run(debug=True, port=args.port, host=args.hostname)
     else:
+        if os.path.isfile("/var/run/airflow-webserver.pid"):
+            print("")
         print(
             'Running the Gunicorn server with {workers} {args.workerclass}'
             'workers on host {args.hostname} and port '
@@ -326,8 +328,11 @@ def webserver(args):
         sp = subprocess.Popen([
             'gunicorn', '-w', str(args.workers), '-k', str(args.workerclass),
             '-t', '120', '-b', args.hostname + ':' + str(args.port),
-            'airflow.www.app:cached_app()'])
-        sp.wait()
+            '-n', 'airflow-webserver', '--pid', args.pid,
+            'airflow.www.app:cached_app()']
+        )
+        if args.foreground:
+            sp.wait()
 
 
 def scheduler(args):
@@ -598,6 +603,18 @@ def get_parser():
         "-hn", "--hostname",
         default=configuration.get('webserver', 'WEB_SERVER_HOST'),
         help="Set the hostname on which to run the web server")
+    parser_webserver.add_argument(
+        "--pid",
+        nargs='?',
+        default=os.path.expanduser("~/airflow-webserver.pid"),
+        help="Where to store the PID file for the webserver"
+    )
+    parser_webserver.add_argument(
+        "-f", "--foreground",
+        help="Keep the webserver running in the foreground",
+        action="store_true"
+    )
+
     ht = "Use the server that ships with Flask in debug mode"
     parser_webserver.add_argument(
         "-d", "--debug", help=ht, action="store_true")
