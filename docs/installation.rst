@@ -215,7 +215,8 @@ Integration with systemd
 Airflow can integrate with systemd based systems. This makes watching your daemons easy as systemd
 can take care restarting a daemon on failure. In the ``scripts/systemd`` directory you can find unit files that
 have been tested on Redhat based systems. You can copy those ``/usr/lib/systemd/system``. Then make sure to
-copy ``tmpfiles.d-airflow.conf`` to ``/etc/tmpfiles.d`` or ``/usr/lib/tmpfiles.d/``. Issue ``systemctl daemon-reload``
+copy ``airflow.conf`` to ``/etc/tmpfiles.d`` or ``/usr/lib/tmpfiles.d/``. This tells systemd to create
+ /run/airflow with the right permissions (0755 airflow airflow). Issue ``systemctl daemon-reload``
  to make systemd pickup the new config.
 
 It is assumed that Airflow will run under ``airflow:airflow``. If not (or if you are running on a non Redhat based system) you
