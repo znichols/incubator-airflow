@@ -578,10 +578,11 @@ class SchedulerJob(BaseJob):
     def _execute(self):
         dag_id = self.dag_id
 
-        def signal_handler(signum, frame):
-            self.logger.error("SIGINT (ctrl-c) received")
+        '''def signal_handler(signum, frame):
+            self.logger.error("SIGINT (ctrl-c) or SIGTERM received")
             sys.exit(1)
-        signal.signal(signal.SIGINT, signal_handler)
+
+        signal.signal(signal.SIGINT, signal_handler)'''
 
         utils.pessimistic_connection_handling()
 
@@ -589,7 +590,7 @@ class SchedulerJob(BaseJob):
         self.logger.info("Starting the scheduler")
 
         dagbag = models.DagBag(self.subdir, sync_to_db=True)
-        executor = dagbag.executor
+        executor = self.executor = dagbag.executor
         executor.start()
         i = 0
         while not self.num_runs or self.num_runs > i:
@@ -651,6 +652,10 @@ class SchedulerJob(BaseJob):
             except Exception as deep_e:
                 self.logger.exception(deep_e)
         executor.end()
+
+    def terminate(self, signum, frame):
+        self.executor.terminate()
+        sys.exit(0)
 
     def heartbeat_callback(self):
         if statsd:

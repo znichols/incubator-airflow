@@ -9,6 +9,11 @@ from builtins import input
 import argparse
 import dateutil.parser
 
+import daemon
+from daemon.pidfile import TimeoutPIDLockFile
+import signal
+import sys
+
 import airflow
 from airflow import jobs, settings, utils
 from airflow import configuration
@@ -21,6 +26,10 @@ DAGS_FOLDER = os.path.expanduser(configuration.get('core', 'DAGS_FOLDER'))
 # Common help text across subcommands
 mark_success_help = "Mark jobs as succeeded without running them"
 subdir_help = "File location or directory from which to look for the dag"
+
+
+def sigint_handler(signal, frame):
+    sys.exit(0)
 
 
 def process_subdir(subdir):
@@ -340,7 +349,23 @@ def scheduler(args):
         subdir=process_subdir(args.subdir),
         num_runs=args.num_runs,
         do_pickle=args.do_pickle)
-    job.run()
+
+    if not args.foreground:
+        logger = logging.getLogger()
+        logger.setLevel(logging.DEBUG)
+        fh = logging.FileHandler("/tmp/airflow.log")
+        logger.addHandler(fh)
+        ctx = daemon.DaemonContext(
+            pidfile=TimeoutPIDLockFile(args.pid, -1),
+            signal_map={signal.SIGTERM: job.terminate},
+            files_preserve=[fh.stream]
+        )
+
+        with ctx:
+            job.run()
+    else:
+        signal.signal(signal.SIGINT, sigint_handler)
+        job.run()
 
 
 def serve_logs(args):
@@ -638,6 +663,17 @@ def get_parser():
             "to the workers, instead of letting workers run their version "
             "of the code."),
         action="store_true")
+    parser_scheduler.add_argument(
+        "--pid",
+        nargs='?',
+        default=os.path.expanduser("~/airflow-scheduler.pid"),
+        help="Where to store the PID file for the scheduler"
+    )
+    parser_scheduler.add_argument(
+        "-f", "--foreground",
+        help="Keep the scheduler running in the foreground",
+        action="store_true"
+    )
     parser_scheduler.set_defaults(func=scheduler)
 
     ht = "Initialize the metadata database"
@@ -686,6 +722,17 @@ def get_parser():
         type=int,
         help="The number of worker processes",
         default=configuration.get('celery', 'celeryd_concurrency'))
+    parser_worker.add_argument(
+        "--pid",
+        nargs='?',
+        default=os.path.expanduser("~/airflow-worker.pid"),
+        help="Where to store the PID file for the worker"
+    )
+    parser_worker.add_argument(
+        "-f", "--foreground",
+        help="Keep the worker running in the foreground",
+        action="store_true"
+    )
     parser_worker.set_defaults(func=worker)
 
     ht = "Serve logs generate by worker"
@@ -698,6 +745,17 @@ def get_parser():
         "-p", "--port", help="The port")
     parser_flower.add_argument(
         "-a", "--broker_api", help="Broker api")
+    parser_flower.add_argument(
+        "--pid",
+        nargs='?',
+        default=os.path.expanduser("~/airflow-flower.pid"),
+        help="Where to store the PID file for the flower"
+    )
+    parser_flower.add_argument(
+        "-f", "--foreground",
+        help="Keep the flower running in the foreground",
+        action="store_true"
+    )
     parser_flower.set_defaults(func=flower)
 
     parser_version = subparsers.add_parser('version', help="Show version")
@@ -712,5 +770,16 @@ def get_parser():
         "principal", help="kerberos principal",
         nargs='?', default=configuration.get('kerberos', 'principal'))
     parser_kerberos.set_defaults(func=kerberos)
+    parser_kerberos.add_argument(
+        "--pid",
+        nargs='?',
+        default=os.path.expanduser("~/airflow-kerberos.pid"),
+        help="Where to store the PID file for the kerberos ticket renewer"
+    )
+    parser_kerberos.add_argument(
+        "-f", "--foreground",
+        help="Keep the kerberos ticket renewer running in the foreground",
+        action="store_true"
+    )
 
     return parser

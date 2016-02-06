@@ -17,6 +17,7 @@ class LocalWorker(multiprocessing.Process, LoggingMixin):
         multiprocessing.Process.__init__(self)
         self.task_queue = task_queue
         self.result_queue = result_queue
+        self.daemon = True
 
     def run(self):
         while True:
@@ -34,6 +35,7 @@ class LocalWorker(multiprocessing.Process, LoggingMixin):
             except Exception as e:
                 state = State.FAILED
                 self.logger.error("failed to execute task {}:".format(str(e)))
+                self.pid = None
                 # raise e
             self.result_queue.put((key, state))
             self.task_queue.task_done()
@@ -71,3 +73,7 @@ class LocalExecutor(BaseExecutor):
         [self.queue.put((None, None)) for w in self.workers]
         # Wait for commands to finish
         self.queue.join()
+
+    def terminate(self):
+        for w in self.workers:
+            w.terminate()
