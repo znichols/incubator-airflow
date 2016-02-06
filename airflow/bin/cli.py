@@ -543,6 +543,9 @@ def flower(args):
         stdout.close()
         stderr.close()
     else:
+        signal.signal(signal.SIGINT, sigint_handler)
+        signal.signal(signal.SIGTERM, sigint_handler)
+
         sp = subprocess.Popen(['flower', '-b', broka, port, api])
         sp.wait()
 
