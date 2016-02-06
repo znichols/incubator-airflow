@@ -653,10 +653,6 @@ class SchedulerJob(BaseJob):
                 self.logger.exception(deep_e)
         executor.end()
 
-    def terminate(self, signum, frame):
-        self.executor.terminate()
-        sys.exit(0)
-
     def heartbeat_callback(self):
         if statsd:
             statsd.gauge('scheduler_heartbeat', 1, 1)

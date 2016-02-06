@@ -74,6 +74,3 @@ class LocalExecutor(BaseExecutor):
         # Wait for commands to finish
         self.queue.join()
 
-    def terminate(self):
-        for w in self.workers:
-            w.terminate()

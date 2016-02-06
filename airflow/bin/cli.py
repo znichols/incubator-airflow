@@ -32,6 +32,17 @@ def sigint_handler(signal, frame):
     sys.exit(0)
 
 
+def setup_logging(filename):
+    root = logging.getLogger()
+    handler = logging.FileHandler(filename)
+    formatter = logging.Formatter(settings.SIMPLE_LOG_FORMAT)
+    handler.setFormatter(formatter)
+    root.addHandler(handler)
+    root.setLevel(settings.LOGGING_LEVEL)
+
+    return handler.stream
+
+
 def process_subdir(subdir):
     dags_folder = configuration.get("core", "DAGS_FOLDER")
     dags_folder = os.path.expanduser(dags_folder)
@@ -351,20 +362,24 @@ def scheduler(args):
         do_pickle=args.do_pickle)
 
     if not args.foreground:
-        logger = logging.getLogger()
-        logger.setLevel(logging.DEBUG)
-        fh = logging.FileHandler("/tmp/airflow.log")
-        logger.addHandler(fh)
+        handle = setup_logging(args.log_file)
+        stdout = open(args.stdout, 'w+')
+        stderr = open(args.stderr, 'w+')
+
         ctx = daemon.DaemonContext(
             pidfile=TimeoutPIDLockFile(args.pid, -1),
-            signal_map={signal.SIGTERM: job.terminate},
-            files_preserve=[fh.stream]
+            files_preserve=[handle],
+            stdout=stdout,
+            stderr=stderr,
         )
-
         with ctx:
             job.run()
+        
+        stdout.close()
+        stderr.close()
     else:
         signal.signal(signal.SIGINT, sigint_handler)
+        signal.signal(signal.SIGTERM, sigint_handler)
         job.run()
 
 
@@ -673,6 +688,24 @@ def get_parser():
         "-f", "--foreground",
         help="Keep the scheduler running in the foreground",
         action="store_true"
+    )
+    parser_scheduler.add_argument(
+        "-l", "--log-file",
+        help="Where to save the log file if daemonizing",
+        nargs='?',
+        default=os.path.join(os.path.expanduser(settings.AIRFLOW_HOME), 'airflow-scheduler.log')
+    )
+    parser_scheduler.add_argument(
+        "--stdout",
+        help="Where to redirect stdout file if daemonizing",
+        nargs='?',
+        default=os.path.join(os.path.expanduser(settings.AIRFLOW_HOME), 'airflow-scheduler.out')
+    )
+    parser_scheduler.add_argument(
+        "--stderr",
+        help="Where to redirect stderr if daemonizing",
+        nargs='?',
+        default=os.path.join(os.path.expanduser(settings.AIRFLOW_HOME), 'airflow-scheduler.err')
     )
     parser_scheduler.set_defaults(func=scheduler)
 
