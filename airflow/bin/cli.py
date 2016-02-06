@@ -927,6 +927,18 @@ def get_parser():
         help="Keep the flower running in the foreground",
         action="store_true"
     )
+    parser_flower.add_argument(
+        "--stdout",
+        help="Where to redirect stdout file if daemonizing",
+        nargs='?',
+        default=os.path.join(os.path.expanduser(settings.AIRFLOW_HOME), 'airflow-flower.out')
+    )
+    parser_flower.add_argument(
+        "--stderr",
+        help="Where to redirect stderr if daemonizing",
+        nargs='?',
+        default=os.path.join(os.path.expanduser(settings.AIRFLOW_HOME), 'airflow-flower.err')
+    )
     parser_flower.set_defaults(func=flower)
 
     parser_version = subparsers.add_parser('version', help="Show version")
