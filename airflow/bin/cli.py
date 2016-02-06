@@ -525,15 +525,49 @@ def flower(args):
     api = ''
     if args.broker_api:
         api = '--broker_api=' + args.broker_api
-    sp = subprocess.Popen(['flower', '-b', broka, port, api])
-    sp.wait()
+
+    if not args.foreground:
+        stdout = open(args.stdout, 'w+')
+        stderr = open(args.stderr, 'w+')
+
+        ctx = daemon.DaemonContext(
+            pidfile=TimeoutPIDLockFile(args.pid, -1),
+            stdout=stdout,
+            stderr=stderr,
+        )
+
+        with ctx:
+            sp = subprocess.Popen(['flower', '-b', broka, port, api])
+            sp.wait()
+
+        stdout.close()
+        stderr.close()
+    else:
+        sp = subprocess.Popen(['flower', '-b', broka, port, api])
+        sp.wait()
 
 
 def kerberos(args):
     print(settings.HEADER)
-
     import airflow.security.kerberos
-    airflow.security.kerberos.run()
+
+    if not args.foreground:
+        stdout = open(args.stdout, 'w+')
+        stderr = open(args.stderr, 'w+')
+
+        ctx = daemon.DaemonContext(
+            pidfile=TimeoutPIDLockFile(args.pid, -1),
+            stdout=stdout,
+            stderr=stderr,
+        )
+
+        with ctx:
+            airflow.security.kerberos.run()
+
+        stdout.close()
+        stderr.close()
+    else:
+        airflow.security.kerberos.run()
 
 
 def get_parser():
@@ -918,6 +952,19 @@ def get_parser():
         help="Keep the kerberos ticket renewer running in the foreground",
         action="store_true"
     )
+    parser_kerberos.add_argument(
+        "--stdout",
+        help="Where to redirect stdout file if daemonizing",
+        nargs='?',
+        default=os.path.join(os.path.expanduser(settings.AIRFLOW_HOME), 'airflow-kerberos.out')
+    )
+    parser_kerberos.add_argument(
+        "--stderr",
+        help="Where to redirect stderr if daemonizing",
+        nargs='?',
+        default=os.path.join(os.path.expanduser(settings.AIRFLOW_HOME), 'airflow-kerberos.err')
+    )
+
 
     ht = "Render a task instance's template(s)"
     parser_render = subparsers.add_parser('render', help=ht)
