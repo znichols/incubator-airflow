@@ -448,6 +448,21 @@ def serve_logs(args):
 
 
 def worker(args):
+    env = os.environ.copy()
+    env['AIRFLOW_HOME'] = settings.AIRFLOW_HOME
+
+    # Celery worker
+    from airflow.executors.celery_executor import app as celery_app
+    from celery.bin import worker
+
+    worker = worker.worker(app=celery_app)
+    options = {
+        'optimization': 'fair',
+        'O': 'fair',
+        'queues': args.queues,
+        'concurrency': args.concurrency,
+    }
+
     if not args.foreground:
         handle = setup_logging(args.log_file)
         stdout = open(args.stdout, 'w+')
@@ -460,43 +475,18 @@ def worker(args):
             stderr=stderr,
         )
         with ctx:
-            # Worker to serve static log files through this simple flask app
-            env = os.environ.copy()
-            env['AIRFLOW_HOME'] = settings.AIRFLOW_HOME
             sp = subprocess.Popen(['airflow', 'serve_logs'], env=env)
-
-            # Celery worker
-            from airflow.executors.celery_executor import app as celery_app
-            from celery.bin import worker
-
-            worker = worker.worker(app=celery_app)
-            options = {
-                'optimization': 'fair',
-                'O': 'fair',
-                'queues': args.queues,
-                'concurrency': args.concurrency,
-            }
             worker.run(**options)
             sp.kill()
 
         stdout.close()
         stderr.close()
     else:
-        env = os.environ.copy()
-        env['AIRFLOW_HOME'] = settings.AIRFLOW_HOME
+        signal.signal(signal.SIGINT, sigint_handler)
+        signal.signal(signal.SIGTERM, sigint_handler)
+
         sp = subprocess.Popen(['airflow', 'serve_logs'], env=env)
 
-        # Celery worker
-        from airflow.executors.celery_executor import app as celery_app
-        from celery.bin import worker
-
-        worker = worker.worker(app=celery_app)
-        options = {
-            'optimization': 'fair',
-            'O': 'fair',
-            'queues': args.queues,
-            'concurrency': args.concurrency,
-        }
         worker.run(**options)
         sp.kill()
         
