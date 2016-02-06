@@ -374,7 +374,7 @@ def scheduler(args):
         )
         with ctx:
             job.run()
-        
+
         stdout.close()
         stderr.close()
     else:
@@ -403,25 +403,58 @@ def serve_logs(args):
 
 
 def worker(args):
-    # Worker to serve static log files through this simple flask app
-    env = os.environ.copy()
-    env['AIRFLOW_HOME'] = settings.AIRFLOW_HOME
-    sp = subprocess.Popen(['airflow', 'serve_logs'], env=env)
+    if not args.foreground:
+        handle = setup_logging(args.log_file)
+        stdout = open(args.stdout, 'w+')
+        stderr = open(args.stderr, 'w+')
 
-    # Celery worker
-    from airflow.executors.celery_executor import app as celery_app
-    from celery.bin import worker
+        ctx = daemon.DaemonContext(
+            pidfile=TimeoutPIDLockFile(args.pid, -1),
+            files_preserve=[handle],
+            stdout=stdout,
+            stderr=stderr,
+        )
+        with ctx:
+            # Worker to serve static log files through this simple flask app
+            env = os.environ.copy()
+            env['AIRFLOW_HOME'] = settings.AIRFLOW_HOME
+            sp = subprocess.Popen(['airflow', 'serve_logs'], env=env)
 
-    worker = worker.worker(app=celery_app)
-    options = {
-        'optimization': 'fair',
-        'O': 'fair',
-        'queues': args.queues,
-        'concurrency': args.concurrency,
-    }
-    worker.run(**options)
-    sp.kill()
+            # Celery worker
+            from airflow.executors.celery_executor import app as celery_app
+            from celery.bin import worker
 
+            worker = worker.worker(app=celery_app)
+            options = {
+                'optimization': 'fair',
+                'O': 'fair',
+                'queues': args.queues,
+                'concurrency': args.concurrency,
+            }
+            worker.run(**options)
+            sp.kill()
+
+        stdout.close()
+        stderr.close()
+    else:
+        env = os.environ.copy()
+        env['AIRFLOW_HOME'] = settings.AIRFLOW_HOME
+        sp = subprocess.Popen(['airflow', 'serve_logs'], env=env)
+
+        # Celery worker
+        from airflow.executors.celery_executor import app as celery_app
+        from celery.bin import worker
+
+        worker = worker.worker(app=celery_app)
+        options = {
+            'optimization': 'fair',
+            'O': 'fair',
+            'queues': args.queues,
+            'concurrency': args.concurrency,
+        }
+        worker.run(**options)
+        sp.kill()
+        
 
 def initdb(args):
     print("DB: " + configuration.get('core', 'SQL_ALCHEMY_CONN'))
@@ -765,6 +798,24 @@ def get_parser():
         "-f", "--foreground",
         help="Keep the worker running in the foreground",
         action="store_true"
+    )
+    parser_worker.add_argument(
+        "-l", "--log-file",
+        help="Where to save the log file if daemonizing",
+        nargs='?',
+        default=os.path.join(os.path.expanduser(settings.AIRFLOW_HOME), 'airflow-worker.log')
+    )
+    parser_worker.add_argument(
+        "--stdout",
+        help="Where to redirect stdout file if daemonizing",
+        nargs='?',
+        default=os.path.join(os.path.expanduser(settings.AIRFLOW_HOME), 'airflow-worker.out')
+    )
+    parser_worker.add_argument(
+        "--stderr",
+        help="Where to redirect stderr if daemonizing",
+        nargs='?',
+        default=os.path.join(os.path.expanduser(settings.AIRFLOW_HOME), 'airflow-worker.err')
     )
     parser_worker.set_defaults(func=worker)
 
