@@ -24,6 +24,7 @@ from airflow.settings import Session
 from airflow.utils import LoggingMixin, round_time
 from lxml import html
 from airflow.utils import AirflowException
+from airflow.configuration import AirflowConfigException
 
 NUM_EXAMPLE_DAGS = 7
 DEV_NULL = '/dev/null'
@@ -251,7 +252,7 @@ class CoreTest(unittest.TestCase):
                 return obj
         t = operators.TriggerDagRunOperator(
             task_id='test_trigger_dagrun',
-            dag_id='example_bash_operator',
+            trigger_dag_id='example_bash_operator',
             python_callable=trigga,
             dag=self.dag)
         t.run(start_date=DEFAULT_DATE, end_date=DEFAULT_DATE, force=True)
@@ -401,6 +402,96 @@ class CoreTest(unittest.TestCase):
         assert "{AIRFLOW_HOME}" not in cfg
         assert "{FERNET_KEY}" not in cfg
 
+    def test_config_works_without_original_but_has_fallback(self):
+        # initial assumption
+        assert configuration.has_option("core", "SQL_ALCHEMY_CONN")
+        assert not configuration.has_option("core", "SQL_ALCHEMY_CONN_CMD")
+
+        SQL_ALCHEMY_CONN = configuration.get('core', 'SQL_ALCHEMY_CONN')
+        BROKER_URL = configuration.get('celery', 'BROKER_URL')
+        CELERY_RESULT_BACKEND = configuration.get('celery',
+                                                  'CELERY_RESULT_BACKEND')
+
+        # testing condition
+        configuration.set("core", "SQL_ALCHEMY_CONN_CMD",
+                          "printf sqlite:///random_string/unittests.db")
+        configuration.set("celery", "BROKER_URL_CMD",
+                          "printf sqlite:///BROKER_URL_CMD/unittests.db")
+        configuration.set("celery", "CELERY_RESULT_BACKEND_CMD",
+                          "printf sqlite:///CELERY_RESULT/unittests.db")
+
+        assert configuration.has_option("core", "SQL_ALCHEMY_CONN_CMD")
+
+        configuration.remove_option("core", "SQL_ALCHEMY_CONN")
+        configuration.remove_option("celery", "BROKER_URL")
+        configuration.remove_option("celery", "CELERY_RESULT_BACKEND")
+
+        FALLBACK_SQL_ALCHEMY = configuration.get("core",
+                                                 "SQL_ALCHEMY_CONN")
+        FALLBACK_BROKER_URL = configuration.get("celery",
+                                                "BROKER_URL")
+        FALLBACK_CELERY = configuration.get("celery",
+                                            "CELERY_RESULT_BACKEND")
+
+        assert FALLBACK_SQL_ALCHEMY == b"sqlite:///random_string/unittests.db"
+        assert FALLBACK_BROKER_URL == b"sqlite:///BROKER_URL_CMD/unittests.db"
+        assert FALLBACK_CELERY == b"sqlite:///CELERY_RESULT/unittests.db"
+
+        # restore the conf back to the original state
+        configuration.set("core", "SQL_ALCHEMY_CONN", SQL_ALCHEMY_CONN)
+        configuration.set("celery", "BROKER_URL", BROKER_URL)
+        configuration.set("celery", "CELERY_RESULT_BACKEND",
+                          CELERY_RESULT_BACKEND)
+
+        assert configuration.has_option("core", "SQL_ALCHEMY_CONN")
+
+        configuration.remove_option("core", "SQL_ALCHEMY_CONN_CMD")
+        configuration.remove_option("celery", "BROKER_URL_CMD")
+        configuration.remove_option("celery", "CELERY_RESULT_BACKEND_CMD")
+
+        assert not configuration.has_option("core", "SQL_ALCHEMY_CONN_CMD")
+
+        NEW_SQL_ALCHEMY_CONN = configuration.get("core","SQL_ALCHEMY_CONN")
+
+        assert NEW_SQL_ALCHEMY_CONN == SQL_ALCHEMY_CONN
+
+    def test_config_use_original_when_original_and_fallback_are_present(self):
+        assert configuration.has_option("core", "SQL_ALCHEMY_CONN")
+        assert not configuration.has_option("core", "SQL_ALCHEMY_CONN_CMD")
+
+        SQL_ALCHEMY_CONN = configuration.get('core', 'SQL_ALCHEMY_CONN')
+
+        configuration.set("core", "SQL_ALCHEMY_CONN_CMD",
+                          "printf sqlite:///random_string/unittests.db")
+
+        FALLBACK_SQL_ALCHEMY_CONN = configuration.get(
+            "core",
+            "SQL_ALCHEMY_CONN"
+        )
+
+        assert FALLBACK_SQL_ALCHEMY_CONN == SQL_ALCHEMY_CONN
+
+        # restore the conf back to the original state
+        configuration.remove_option("core", "SQL_ALCHEMY_CONN_CMD")
+
+    def test_config_throw_error_when_original_and_fallback_is_absent(self):
+        assert configuration.has_option("core", "SQL_ALCHEMY_CONN")
+        assert not configuration.has_option("core", "SQL_ALCHEMY_CONN_CMD")
+
+        SQL_ALCHEMY_CONN = configuration.get("core", "SQL_ALCHEMY_CONN")
+        configuration.remove_option("core", "SQL_ALCHEMY_CONN")
+
+        with self.assertRaises(AirflowConfigException) as cm:
+            configuration.get("core", "SQL_ALCHEMY_CONN")
+
+        exception = str(cm.exception)
+        message = "section/key [core/sql_alchemy_conn] not found in config"
+        assert exception == message
+
+        # restore the conf back to the original state
+        configuration.set("core", "SQL_ALCHEMY_CONN", SQL_ALCHEMY_CONN)
+        assert configuration.has_option("core", "SQL_ALCHEMY_CONN")
+
     def test_class_with_logger_should_have_logger_with_correct_name(self):
 
         # each class should automatically receive a logger with a correct name
@@ -514,6 +605,17 @@ class CliTests(unittest.TestCase):
             'task_state', 'example_bash_operator', 'runme_0',
             DEFAULT_DATE.isoformat()]))
 
+    def test_pause(self):
+        args = self.parser.parse_args([
+            'pause', 'example_bash_operator'])
+        cli.pause(args)
+        assert self.dagbag.dags['example_bash_operator'].is_paused in [True, 1]
+
+        args = self.parser.parse_args([
+            'unpause', 'example_bash_operator'])
+        cli.unpause(args)
+        assert self.dagbag.dags['example_bash_operator'].is_paused in [False, 0]
+
     def test_backfill(self):
         cli.backfill(self.parser.parse_args([
             'backfill', 'example_bash_operator',
@@ -526,6 +628,9 @@ class CliTests(unittest.TestCase):
         cli.backfill(self.parser.parse_args([
             'backfill', 'example_bash_operator', '-l',
             '-s', DEFAULT_DATE.isoformat()]))
+
+    def test_process_subdir_path_with_placeholder(self):
+        assert cli.process_subdir('DAGS_FOLDER/abc') == os.path.join(configuration.get_dags_folder(), 'abc')
 
 
 class WebUiTests(unittest.TestCase):
@@ -1156,6 +1261,33 @@ if 'AIRFLOW_RUNALL_TESTS' in os.environ:
             t = operators.PrestoCheckOperator(
                 task_id='presto_check', sql=sql, dag=self.dag)
             t.run(start_date=DEFAULT_DATE, end_date=DEFAULT_DATE, force=True)
+
+    def test_presto_to_mysql(self):
+        t = operators.PrestoToMySqlTransfer(
+            task_id='presto_to_mysql_check',
+            sql="""
+            SELECT name, count(*) as ccount
+            FROM airflow.static_babynames
+            GROUP BY name
+            """,
+            mysql_table='test_static_babynames',
+            mysql_preoperator='TRUNCATE TABLE test_static_babynames;',
+            dag=self.dag)
+        t.run(start_date=DEFAULT_DATE, end_date=DEFAULT_DATE, force=True)
+
+    def test_presto_to_mysql(self):
+        t = operators.PrestoToMySqlTransfer(
+            task_id='presto_to_mysql_check',
+            sql="""
+            SELECT name, count(*) as ccount
+            FROM airflow.static_babynames
+            GROUP BY name
+            """,
+            mysql_table='test_static_babynames',
+            mysql_preoperator='TRUNCATE TABLE test_static_babynames;',
+            dag=self.dag)
+        t.run(start_date=DEFAULT_DATE, end_date=DEFAULT_DATE, force=True)
+
 
         def test_hdfs_sensor(self):
             t = operators.HdfsSensor(

@@ -8,6 +8,7 @@ coveralls
 croniter
 dill
 python-daemon
+docker-py
 filechunkio
 flake8
 flask
@@ -16,6 +17,7 @@ flask-cache
 flask-login
 flower
 future
+google-api-python-client
 gunicorn
 hive-thrift-py
 ipython
@@ -27,6 +29,7 @@ pandas
 pygments
 pyhive
 pydruid
+PyOpenSSL
 PySmbClient
 psycopg2
 python-dateutil
@@ -52,3 +55,4 @@ lxml
 pykerberos
 bcrypt
 flask-bcrypt
+mock

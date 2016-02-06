@@ -40,7 +40,6 @@ from croniter import croniter
 
 from airflow import settings
 from airflow import configuration
-from airflow.settings import LOGGING_LEVEL
 
 
 class AirflowException(Exception):
@@ -187,6 +186,9 @@ def initdb():
             conn_id='beeline_default', conn_type='beeline',
             host='localhost',
             schema='airflow'))
+    merge_conn(
+        models.Connection(
+            conn_id='bigquery_default', conn_type='bigquery'))
     merge_conn(
         models.Connection(
             conn_id='local_mysql', conn_type='mysql',
@@ -390,9 +392,8 @@ def json_ser(obj):
     json serializer that deals with dates
     usage: json.dumps(object, default=utils.json_ser)
     """
-    if isinstance(obj, datetime):
-        obj = obj.isoformat()
-    return obj
+    if isinstance(obj, (datetime, date)):
+        return obj.isoformat()
 
 
 def alchemy_to_dict(obj):
