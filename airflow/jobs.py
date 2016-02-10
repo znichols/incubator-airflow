@@ -622,6 +622,7 @@ class SchedulerJob(BaseJob):
                     self.logger.debug("Scheduling {}".format(dag.dag_id))
                     dag = dagbag.get_dag(dag.dag_id)
                     if not dag or (dag.dag_id in paused_dag_ids):
+                        logging.warning("DAG {} is paused.".format(dag.dag_id))
                         continue
                     try:
                         self.schedule_dag(dag)

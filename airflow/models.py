@@ -1058,6 +1058,7 @@ class TaskInstance(Base):
 
     def handle_failure(self, error, test_mode=False, context=None):
         logging.exception(error)
+        logging.error("Handling failure...")
         task = self.task
         session = settings.Session()
         self.end_date = datetime.now()
