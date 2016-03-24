@@ -506,10 +506,8 @@ class ConfigParserWithDefaults(ConfigParser):
 
         # add defaults
         for section in sorted(self.defaults):
-            if section not in cfg:
-                cfg[section] = OrderedDict()
             for k in sorted(self.defaults[section].keys()):
-                if k not in cfg[section]:
+                if k not in cfg.setdefault(section, OrderedDict()):
                     opt = self.defaults[section][k]
                     if include_source:
                         cfg[section][k] = (opt, 'default')
