@@ -479,18 +479,17 @@ class ConfigParserWithDefaults(ConfigParser):
         ConfigParser.read(self, filenames)
         self._validate()
 
-    def as_dict(self, include_source=False):
+    def as_dict(self, display_source=False, display_sensitive=False):
         """
         Returns the current configuration as an OrderedDict of OrderedDicts.
-
-        :param include_source: If False, the option value is returned. If True,
+        :param display_source: If False, the option value is returned. If True,
             a tuple of (option_value, source) is returned. Source is either
             'airflow.cfg' or 'default'.
-        :type include_source: bool
-
-        Sensitive configuration options that are set either by environment
-        variable or by bash command are NOT included (but if they have
-        default values, those will be shown).
+        :type display_source: bool
+        :param display_sensitive: If True, the values of options set by env
+            vars and bash commands will be displayed. If False, those options
+            are shown as '< hidden >'
+        :type display_sensitive: bool
         """
         cfg = copy.deepcopy(self._sections)
 
@@ -499,20 +498,45 @@ class ConfigParserWithDefaults(ConfigParser):
             options.pop('__name__', None)
 
         # add source
-        if include_source:
+        if display_source:
             for section in cfg:
                 for k, v in cfg[section].items():
                     cfg[section][k] = (v, 'airflow.cfg')
 
+        # add env vars and overwrite because they have priority
+        for ev in [ev for ev in os.environ if ev.startswith('AIRFLOW__')]:
+            try:
+                _, section, key = ev.split('__')
+                opt = self._get_env_var_option(section, key)
+                if opt:
+                    if not display_sensitive:
+                        opt = '< hidden >'
+                    if display_source:
+                        opt = (opt, 'env var')
+                    cfg.setdefault(section.lower(), OrderedDict()).update(
+                        {key.lower(): opt})
+            except:
+                pass
+
+        # add bash commands
+        for (section, key) in ConfigParserWithDefaults.as_command_stdout:
+            opt = self._get_cmd_option(section, key)
+            if opt:
+                if not display_sensitive:
+                    opt = '< hidden >'
+                if display_source:
+                    opt = (opt, 'bash cmd')
+                cfg.setdefault(section, OrderedDict()).update({key: opt})
+
         # add defaults
         for section in sorted(self.defaults):
-            for k in sorted(self.defaults[section].keys()):
-                if k not in cfg.setdefault(section, OrderedDict()):
-                    opt = self.defaults[section][k]
-                    if include_source:
-                        cfg[section][k] = (opt, 'default')
+            for key in sorted(self.defaults[section].keys()):
+                if key not in cfg.setdefault(section, OrderedDict()):
+                    opt = str(self.defaults[section][key])
+                    if display_source:
+                        cfg[section][key] = (opt, 'default')
                     else:
-                        cfg[section][k] = opt
+                        cfg[section][key] = opt
 
         return cfg
 
@@ -604,20 +628,10 @@ def has_option(section, key):
 def remove_option(section, option):
     return conf.remove_option(section, option)
 
-def as_dict(include_source=False):
-    """
-    Returns the current configuration as an OrderedDict of OrderedDicts.
-
-    :param include_source: If False, the option value is returned. If True,
-        a tuple of (option_value, source) is returned. Source is either
-        'airflow.cfg' or 'default'.
-    :type include_source: bool
-
-    Sensitive configuration options that are set either by environment
-    variable or by bash command are NOT included (but if they have
-    default values, those will be shown).
-    """
-    return conf.as_dict(include_source=include_source)
+def as_dict(display_source=False, display_sensitive=False):
+    return conf.as_dict(
+        display_source=display_source, display_sensitive=display_sensitive)
+as_dict.__doc__ = conf.as_dict.__doc__
 
 def set(section, option, value):  # noqa
     return conf.set(section, option, value)
