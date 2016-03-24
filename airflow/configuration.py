@@ -7,7 +7,9 @@ from future import standard_library
 standard_library.install_aliases()
 
 from builtins import str
+from collections import OrderedDict
 from configparser import ConfigParser
+import copy
 import errno
 import logging
 import os
@@ -464,6 +466,46 @@ class ConfigParserWithDefaults(ConfigParser):
         ConfigParser.read(self, filenames)
         self._validate()
 
+    def as_dict(self, include_source=False):
+        """
+        Returns the current configuration as an OrderedDict of OrderedDicts.
+
+        :param include_source: If False, the option value is returned. If True,
+            a tuple of (option_value, source) is returned. Source is either
+            'airflow.cfg' or 'default'.
+        :type include_source: bool
+
+        Sensitive configuration options that are set either by environment
+        variable or by bash command are NOT included (but if they have
+        default values, those will be shown).
+        """
+        cfg = copy.deepcopy(self._sections)
+
+        # remove __name__ (affects Python 2 only)
+        for options in cfg.values():
+            options.pop('__name__', None)
+
+        # add source
+        if include_source:
+            for section in cfg:
+                for k, v in cfg[section].items():
+                    cfg[section][k] = (v, 'airflow.cfg')
+
+        # add defaults
+        for section in sorted(self.defaults):
+            if section not in cfg:
+                cfg[section] = OrderedDict()
+            for k in sorted(self.defaults[section].keys()):
+                if k not in cfg[section]:
+                    opt = self.defaults[section][k]
+                    if include_source:
+                        cfg[section][k] = (opt, 'default')
+                    else:
+                        cfg[section][k] = opt
+
+        return cfg
+
+
 def mkdir_p(path):
     try:
         os.makedirs(path)
@@ -550,6 +592,21 @@ def has_option(section, key):
 
 def remove_option(section, option):
     return conf.remove_option(section, option)
+
+def as_dict(include_source=False):
+    """
+    Returns the current configuration as an OrderedDict of OrderedDicts.
+
+    :param include_source: If False, the option value is returned. If True,
+        a tuple of (option_value, source) is returned. Source is either
+        'airflow.cfg' or 'default'.
+    :type include_source: bool
+
+    Sensitive configuration options that are set either by environment
+    variable or by bash command are NOT included (but if they have
+    default values, those will be shown).
+    """
+    return conf.as_dict(include_source=include_source)
 
 def set(section, option, value):  # noqa
     return conf.set(section, option, value)
