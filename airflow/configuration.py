@@ -412,29 +412,42 @@ class ConfigParserWithDefaults(ConfigParser):
 
         self.is_validated = True
 
-    def get(self, section, key, **kwargs):
-        section = str(section).lower()
-        key = str(key).lower()
-        fallback_key = key + '_cmd'
-        d = self.defaults
-
-        # environment variables get precedence
+    def _get_env_var_option(self, section, key):
         # must have format AIRFLOW__{SECTION}__{KEY} (note double underscore)
         env_var = 'AIRFLOW__{S}__{K}'.format(S=section.upper(), K=key.upper())
         if env_var in os.environ:
             return expand_env_var(os.environ[env_var])
 
-        # ...then the config file
-        elif self.has_option(section, key):
-            return expand_env_var(ConfigParser.get(self, section, key, **kwargs))
-
-        elif ((section, key) in ConfigParserWithDefaults.as_command_stdout
-            and self.has_option(section, fallback_key)):
+    def _get_cmd_option(self, section, key):
+        fallback_key = key + '_cmd'
+        if ((section, key) in ConfigParserWithDefaults.as_command_stdout
+                and self.has_option(section, fallback_key)):
             command = self.get(section, fallback_key)
             return run_command(command)
 
+    def get(self, section, key, **kwargs):
+        section = str(section).lower()
+        key = str(key).lower()
+
+        d = self.defaults
+
+        # first check environment variables
+        option = self._get_env_var_option(section, key)
+        if option:
+            return option
+
+        # ...then the config file
+        if self.has_option(section, key):
+            return expand_env_var(
+                ConfigParser.get(self, section, key, **kwargs))
+
+        # ...then commands
+        option = self._get_cmd_option(section, key)
+        if option:
+            return option
+
         # ...then the defaults
-        elif section in d and key in d[section]:
+        if section in d and key in d[section]:
             return expand_env_var(d[section][key])
 
         else:
