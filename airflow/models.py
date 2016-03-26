@@ -1996,7 +1996,7 @@ class DagModel(Base):
     owners = Column(String(2000))
 
     def __repr__(self):
-        return "<DAG: {self.dag_id}>".format(self=self)
+        return "<DAG: {}>".format(self.dag_id)
 
     @classmethod
     def get_current(cls, dag_id):
@@ -2132,7 +2132,7 @@ class DAG(LoggingMixin):
         }
 
     def __repr__(self):
-        return "<DAG: {self.dag_id}>".format(self=self)
+        return "<DAG: {}>".format(self.dag_id)
 
     def __eq__(self, other):
         return (
