@@ -778,7 +778,8 @@ class Airflow(BaseView):
                     f.close()
                     log_loaded = True
                 except:
-                    log = "*** Local log file not found.\n".format(loc)
+                    log = ("*** Local log file not found at expected location:"
+                        "\n{}\n".format(loc))
             else:
                 WORKER_LOG_SERVER_PORT = \
                     conf.get('celery', 'WORKER_LOG_SERVER_PORT')
