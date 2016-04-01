@@ -16,14 +16,14 @@ import inspect
 import traceback
 
 import sqlalchemy as sqla
-from sqlalchemy import or_
+from sqlalchemy import or_, desc, and_
 
 
 from flask import redirect, url_for, request, Markup, Response, current_app, render_template
-from flask.ext.admin import BaseView, expose, AdminIndexView
-from flask.ext.admin.contrib.sqla import ModelView
-from flask.ext.admin.actions import action
-from flask.ext.login import flash
+from flask_admin import BaseView, expose, AdminIndexView
+from flask_admin.contrib.sqla import ModelView
+from flask_admin.actions import action
+from flask_login import flash
 from flask._compat import PY2
 
 import jinja2
@@ -37,28 +37,31 @@ from pygments import highlight, lexers
 from pygments.formatters import HtmlFormatter
 
 import airflow
+from airflow import configuration as conf
 from airflow import models
-from airflow.settings import Session
-from airflow import configuration
-from airflow import utils
-from airflow.utils import AirflowException
-from airflow.www import utils as wwwutils
 from airflow import settings
-from airflow.models import State
+from airflow.exceptions import AirflowException
+from airflow.settings import Session
 
+from airflow.utils.json import json_ser
+from airflow.utils.state import State
+from airflow.utils.db import provide_session
+from airflow.utils.helpers import alchemy_to_dict
+from airflow.utils import logging as log_utils
+from airflow.www import utils as wwwutils
 from airflow.www.forms import DateTimeForm, DateTimeWithNumRunsForm
 
 QUERY_LIMIT = 100000
 CHART_LIMIT = 200000
 
-dagbag = models.DagBag(os.path.expanduser(configuration.get('core', 'DAGS_FOLDER')))
+dagbag = models.DagBag(os.path.expanduser(conf.get('core', 'DAGS_FOLDER')))
 
 login_required = airflow.login.login_required
 current_user = airflow.login.current_user
 logout_user = airflow.login.logout_user
 
 FILTER_BY_OWNER = False
-if configuration.getboolean('webserver', 'FILTER_BY_OWNER'):
+if conf.getboolean('webserver', 'FILTER_BY_OWNER'):
     # filter_by_owner if authentication is enabled and filter_by_owner is true
     FILTER_BY_OWNER = not current_app.config['LOGIN_DISABLED']
 
@@ -548,13 +551,36 @@ class Airflow(BaseView):
             task_ids += dag.task_ids
             if not dag.is_subdag:
                 dag_ids.append(dag.dag_id)
+
         TI = models.TaskInstance
+        DagRun = models.DagRun
         session = Session()
+
+        LastDagRun = (
+            session.query(DagRun.dag_id, sqla.func.max(DagRun.execution_date).label('execution_date'))
+            .group_by(DagRun.dag_id)
+            .subquery('last_dag_run')
+        )
+
+        # Select all task_instances from active dag_runs.
+        # If no dag_run is active, return task instances from most recent dag_run.
         qry = (
             session.query(TI.dag_id, TI.state, sqla.func.count(TI.task_id))
-                .filter(TI.task_id.in_(task_ids))
-                .filter(TI.dag_id.in_(dag_ids))
-                .group_by(TI.dag_id, TI.state)
+            .outerjoin(DagRun, and_(
+                DagRun.dag_id == TI.dag_id,
+                DagRun.execution_date == TI.execution_date,
+                DagRun.state == State.RUNNING))
+            .outerjoin(LastDagRun, and_(
+                LastDagRun.c.dag_id == TI.dag_id,
+                LastDagRun.c.execution_date == TI.execution_date)
+            )
+            .filter(TI.task_id.in_(task_ids))
+            .filter(TI.dag_id.in_(dag_ids))
+            .filter(or_(
+                DagRun.dag_id != None,
+                LastDagRun.c.dag_id != None
+            ))
+            .group_by(TI.dag_id, TI.state)
         )
 
         data = {}
@@ -595,7 +621,7 @@ class Airflow(BaseView):
         return self.render(
             'airflow/dag_code.html', html_code=html_code, dag=dag, title=title,
             root=request.args.get('root'),
-            demo_mode=configuration.getboolean('webserver', 'demo_mode'))
+            demo_mode=conf.getboolean('webserver', 'demo_mode'))
 
     @expose('/dag_details')
     @login_required
@@ -614,7 +640,7 @@ class Airflow(BaseView):
         )
         return self.render(
             'airflow/dag_details.html',
-            dag=dag, title=title, states=states, State=utils.State)
+            dag=dag, title=title, states=states, State=State)
 
     @current_app.errorhandler(404)
     def circles(self):
@@ -623,7 +649,7 @@ class Airflow(BaseView):
 
     @current_app.errorhandler(500)
     def show_traceback(self):
-        from airflow import ascii as ascii_
+        from airflow.utils import asciiart as ascii_
         return render_template(
             'airflow/traceback.html',
             hostname=socket.gethostname(),
@@ -633,9 +659,8 @@ class Airflow(BaseView):
     @expose('/sandbox')
     @login_required
     def sandbox(self):
-        from airflow import configuration
         title = "Sandbox Suggested Configuration"
-        cfg_loc = configuration.AIRFLOW_CONFIG + '.sandbox'
+        cfg_loc = conf.AIRFLOW_CONFIG + '.sandbox'
         f = open(cfg_loc, 'r')
         config = f.read()
         f.close()
@@ -683,6 +708,7 @@ class Airflow(BaseView):
     @expose('/logout')
     def logout(self):
         logout_user()
+        flash('You have been logged out.')
         return redirect(url_for('admin.index'))
 
     @expose('/rendered')
@@ -725,7 +751,7 @@ class Airflow(BaseView):
     @wwwutils.action_logging
     def log(self):
         BASE_LOG_FOLDER = os.path.expanduser(
-            configuration.get('core', 'BASE_LOG_FOLDER'))
+            conf.get('core', 'BASE_LOG_FOLDER'))
         dag_id = request.args.get('dag_id')
         task_id = request.args.get('task_id')
         execution_date = request.args.get('execution_date')
@@ -755,10 +781,10 @@ class Airflow(BaseView):
                     f.close()
                     log_loaded = True
                 except:
-                    log = "*** Log file isn't where expected.\n".format(loc)
+                    log = "*** Local log file not found.\n".format(loc)
             else:
                 WORKER_LOG_SERVER_PORT = \
-                    configuration.get('celery', 'WORKER_LOG_SERVER_PORT')
+                    conf.get('celery', 'WORKER_LOG_SERVER_PORT')
                 url = os.path.join(
                     "http://{host}:{WORKER_LOG_SERVER_PORT}/log", log_relative
                     ).format(**locals())
@@ -772,22 +798,23 @@ class Airflow(BaseView):
                     log += "*** Failed to fetch log file from worker.\n".format(
                         **locals())
 
-            # try to load log backup from S3
-            s3_log_folder = configuration.get('core', 'S3_LOG_FOLDER')
-            if not log_loaded and s3_log_folder.startswith('s3:'):
-                import boto
-                s3 = boto.connect_s3()
-                s3_log_loc = os.path.join(
-                    configuration.get('core', 'S3_LOG_FOLDER'), log_relative)
-                log += '*** Fetching log from S3: {}\n'.format(s3_log_loc)
-                log += ('*** Note: S3 logs are only available once '
-                        'tasks have completed.\n')
-                bucket, key = s3_log_loc.lstrip('s3:/').split('/', 1)
-                s3_key = boto.s3.key.Key(s3.get_bucket(bucket), key)
-                if s3_key.exists():
-                    log += '\n' + s3_key.get_contents_as_string().decode()
-                else:
-                    log += '*** No log found on S3.\n'
+            if not log_loaded:
+                # load remote logs
+                remote_log_base = conf.get('core', 'REMOTE_BASE_LOG_FOLDER')
+                remote_log = os.path.join(remote_log_base, log_relative)
+                log += '\n*** Reading remote logs...\n'
+
+                # S3
+                if remote_log.startswith('s3:/'):
+                    log += log_utils.S3Log().read(remote_log, return_error=True)
+
+                # GCS
+                elif remote_log.startswith('gs:/'):
+                    log += log_utils.GCSLog().read(remote_log, return_error=True)
+
+                # unsupported
+                elif remote_log:
+                    log += '*** Unsupported remote log location.'
 
             session.commit()
             session.close()
@@ -1081,7 +1108,7 @@ class Airflow(BaseView):
     @wwwutils.action_logging
     def tree(self):
         dag_id = request.args.get('dag_id')
-        blur = configuration.getboolean('webserver', 'demo_mode')
+        blur = conf.getboolean('webserver', 'demo_mode')
         dag = dagbag.get_dag(dag_id)
         root = request.args.get('root')
         if root:
@@ -1114,7 +1141,7 @@ class Airflow(BaseView):
             .all()
         )
         dag_runs = {
-            dr.execution_date: utils.alchemy_to_dict(dr) for dr in dag_runs}
+            dr.execution_date: alchemy_to_dict(dr) for dr in dag_runs}
 
         tis = dag.get_task_instances(
                 session, start_date=min_date, end_date=base_date)
@@ -1122,7 +1149,7 @@ class Airflow(BaseView):
         max_date = max([ti.execution_date for ti in tis]) if dates else None
         task_instances = {}
         for ti in tis:
-            tid = utils.alchemy_to_dict(ti)
+            tid = alchemy_to_dict(ti)
             dr = dag_runs.get(ti.execution_date)
             tid['external_trigger'] = dr['external_trigger'] if dr else False
             task_instances[(ti.task_id, ti.execution_date)] = tid
@@ -1177,7 +1204,7 @@ class Airflow(BaseView):
                 for d in dates],
         }
 
-        data = json.dumps(data, indent=4, default=utils.json_ser)
+        data = json.dumps(data, indent=4, default=json_ser)
         session.commit()
         session.close()
 
@@ -1200,7 +1227,7 @@ class Airflow(BaseView):
     def graph(self):
         session = settings.Session()
         dag_id = request.args.get('dag_id')
-        blur = configuration.getboolean('webserver', 'demo_mode')
+        blur = conf.getboolean('webserver', 'demo_mode')
         arrange = request.args.get('arrange', "LR")
         dag = dagbag.get_dag(dag_id)
         if dag_id not in dagbag.dags:
@@ -1246,7 +1273,11 @@ class Airflow(BaseView):
             dttm = dag.latest_execution_date or datetime.now().date()
 
         DR = models.DagRun
-        drs = session.query(DR).filter_by(dag_id=dag_id).order_by('execution_date desc').all()
+        drs = (
+            session.query(DR)
+            .filter_by(dag_id=dag_id)
+            .order_by(desc(DR.execution_date)).all()
+        )
         dr_choices = []
         dr_state = None
         for dr in drs:
@@ -1266,7 +1297,7 @@ class Airflow(BaseView):
             data={'execution_date': dttm.isoformat(), 'arrange': arrange})
 
         task_instances = {
-            ti.task_id: utils.alchemy_to_dict(ti)
+            ti.task_id: alchemy_to_dict(ti)
             for ti in dag.get_task_instances(session, dttm, dttm)}
         tasks = {
             t.task_id: {
@@ -1356,7 +1387,7 @@ class Airflow(BaseView):
             data=json.dumps(all_data),
             chart_options={'yAxis': {'title': {'text': 'hours'}}},
             height="700px",
-            demo_mode=configuration.getboolean('webserver', 'demo_mode'),
+            demo_mode=conf.getboolean('webserver', 'demo_mode'),
             root=root,
             form=form,
         )
@@ -1416,7 +1447,7 @@ class Airflow(BaseView):
             data=json.dumps(all_data),
             height="700px",
             chart_options={'yAxis': {'title': {'text': 'hours after 00:00'}}},
-            demo_mode=configuration.getboolean('webserver', 'demo_mode'),
+            demo_mode=conf.getboolean('webserver', 'demo_mode'),
             root=root,
             form=form,
         )
@@ -1477,7 +1508,7 @@ class Airflow(BaseView):
         session = settings.Session()
         dag_id = request.args.get('dag_id')
         dag = dagbag.get_dag(dag_id)
-        demo_mode = configuration.getboolean('webserver', 'demo_mode')
+        demo_mode = conf.getboolean('webserver', 'demo_mode')
 
         root = request.args.get('root')
         if root:
@@ -1549,6 +1580,26 @@ class Airflow(BaseView):
             demo_mode=demo_mode,
             root=root,
         )
+
+    @expose('/object/task_instances')
+    @login_required
+    @wwwutils.action_logging
+    def task_instances(self):
+        session = settings.Session()
+        dag_id = request.args.get('dag_id')
+        dag = dagbag.get_dag(dag_id)
+
+        dttm = request.args.get('execution_date')
+        if dttm:
+            dttm = dateutil.parser.parse(dttm)
+        else:
+            return ("Error: Invalid execution_date")
+
+        task_instances = {
+            ti.task_id: alchemy_to_dict(ti)
+            for ti in dag.get_task_instances(session, dttm, dttm)}
+
+        return json.dumps(task_instances)
 
     @expose('/variables/<form>', methods=["GET", "POST"])
     @login_required
@@ -1931,7 +1982,7 @@ class DagRunModelView(ModelViewOnly):
     def action_set_success(self, ids):
         self.set_dagrun_state(ids, State.SUCCESS)
 
-    @utils.provide_session
+    @provide_session
     def set_dagrun_state(self, ids, target_state, session=None):
         try:
             DR = models.DagRun
@@ -2010,7 +2061,7 @@ class TaskInstanceModelView(ModelViewOnly):
     def action_set_retry(self, ids):
         self.set_task_instance_state(ids, State.UP_FOR_RETRY)
 
-    @utils.provide_session
+    @provide_session
     def set_task_instance_state(self, ids, target_state, session=None):
         try:
             TI = models.TaskInstance
@@ -2046,6 +2097,10 @@ class ConnectionModelView(wwwutils.SuperUserMixin, AirflowModelView):
         'extra',
         'extra__jdbc__drv_path',
         'extra__jdbc__drv_clsname',
+        'extra__google_cloud_platform__project',
+        'extra__google_cloud_platform__key_path',
+        'extra__google_cloud_platform__service_account',
+        'extra__google_cloud_platform__scope',
     )
     verbose_name = "Connection"
     verbose_name_plural = "Connections"
@@ -2064,12 +2119,19 @@ class ConnectionModelView(wwwutils.SuperUserMixin, AirflowModelView):
     form_extra_fields = {
         'extra__jdbc__drv_path' : StringField('Driver Path'),
         'extra__jdbc__drv_clsname': StringField('Driver Class'),
+        'extra__google_cloud_platform__project': StringField('Project'),
+        'extra__google_cloud_platform__key_path': StringField('Keyfile Path'),
+        'extra__google_cloud_platform__service_account': StringField('Service Account'),
+        'extra__google_cloud_platform__scope': StringField('Scopes (comma seperated)'),
+
     }
     form_choices = {
         'conn_type': [
             ('bigquery', 'BigQuery',),
+            ('datastore', 'Google Datastore'),
             ('ftp', 'FTP',),
             ('google_cloud_storage', 'Google Cloud Storage'),
+            ('google_cloud_platform', 'Google Cloud Platform'),
             ('hdfs', 'HDFS',),
             ('http', 'HTTP',),
             ('hive_cli', 'Hive Client Wrapper',),
@@ -2084,6 +2146,7 @@ class ConnectionModelView(wwwutils.SuperUserMixin, AirflowModelView):
             ('s3', 'S3',),
             ('samba', 'Samba',),
             ('sqlite', 'Sqlite',),
+            ('ssh', 'SSH',),
             ('mssql', 'Microsoft SQL Server'),
             ('mesos_framework-id', 'Mesos Framework ID'),
         ]
@@ -2091,7 +2154,7 @@ class ConnectionModelView(wwwutils.SuperUserMixin, AirflowModelView):
 
     def on_model_change(self, form, model, is_created):
         formdata = form.data
-        if formdata['conn_type'] in ['jdbc']:
+        if formdata['conn_type'] in ['jdbc', 'google_cloud_platform']:
             extra = {
                 key:formdata[key]
                 for key in self.form_extra_fields.keys() if key in formdata}
@@ -2099,7 +2162,7 @@ class ConnectionModelView(wwwutils.SuperUserMixin, AirflowModelView):
 
     @classmethod
     def alert_fernet_key(cls):
-        return not configuration.has_option('core', 'fernet_key')
+        return conf.get('core', 'fernet_key') is None
 
     @classmethod
     def is_secure(self):
@@ -2110,7 +2173,7 @@ class ConnectionModelView(wwwutils.SuperUserMixin, AirflowModelView):
         is_secure = False
         try:
             import cryptography
-            configuration.get('core', 'fernet_key')
+            conf.get('core', 'fernet_key')
             is_secure = True
         except:
             pass
@@ -2138,12 +2201,11 @@ class UserModelView(wwwutils.SuperUserMixin, AirflowModelView):
 class ConfigurationView(wwwutils.SuperUserMixin, BaseView):
     @expose('/')
     def conf(self):
-        from airflow import configuration
         raw = request.args.get('raw') == "true"
         title = "Airflow Configuration"
-        subtitle = configuration.AIRFLOW_CONFIG
-        if configuration.getboolean("webserver", "expose_config"):
-            with open(configuration.AIRFLOW_CONFIG, 'r') as f:
+        subtitle = conf.AIRFLOW_CONFIG
+        if conf.getboolean("webserver", "expose_config"):
+            with open(conf.AIRFLOW_CONFIG, 'r') as f:
                 config = f.read()
         else:
             config = (

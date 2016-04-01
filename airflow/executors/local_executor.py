@@ -6,7 +6,8 @@ from builtins import range
 
 from airflow import configuration
 from airflow.executors.base_executor import BaseExecutor
-from airflow.utils import State, LoggingMixin
+from airflow.utils.state import State
+from airflow.utils.logging import LoggingMixin
 
 PARALLELISM = configuration.get('core', 'PARALLELISM')
 
@@ -30,9 +31,9 @@ class LocalWorker(multiprocessing.Process, LoggingMixin):
                 self.__class__.__name__, command))
             command = "exec bash -c '{0}'".format(command)
             try:
-                subprocess.Popen(command, shell=True).wait()
+                subprocess.check_call(command, shell=True)
                 state = State.SUCCESS
-            except Exception as e:
+            except subprocess.CalledProcessError as e:
                 state = State.FAILED
                 self.logger.error("failed to execute task {}:".format(str(e)))
                 self.pid = None

@@ -6,7 +6,7 @@ from airflow.hooks.base_hook import BaseHook
 from past.builtins import basestring
 
 
-def mlsd(conn, path="", facts=[]):
+def mlsd(conn, path="", facts=None):
     '''
     BACKPORT FROM PYTHON3 FTPLIB
 
@@ -21,6 +21,7 @@ def mlsd(conn, path="", facts=[]):
     including a variable number of "facts" depending on the server
     and whether "facts" argument has been provided.
     '''
+    facts = facts or []
     if facts:
         conn.sendcmd("OPTS MLST " + ";".join(facts) + ";")
     if path:
@@ -195,3 +196,17 @@ class FTPHook(BaseHook):
         conn = self.get_conn()
         ftp_mdtm = conn.sendcmd('MDTM ' + path)
         return datetime.datetime.strptime(ftp_mdtm[4:], '%Y%m%d%H%M%S')
+
+
+class FTPSHook(FTPHook):
+
+    def get_conn(self):
+        """
+        Returns a FTPS connection object
+        """
+        if self.conn is None:
+            params = self.get_connection(self.ftp_conn_id)
+            self.conn = ftplib.FTP_TLS(
+                params.host, params.login, params.password
+            )
+        return self.conn

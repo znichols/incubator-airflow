@@ -1,13 +1,13 @@
 
 from builtins import bytes
 import logging
-import sys
 from subprocess import Popen, STDOUT, PIPE
 from tempfile import gettempdir, NamedTemporaryFile
 
-from airflow.utils import AirflowException
+from airflow.exceptions import AirflowException
 from airflow.models import BaseOperator
-from airflow.utils import apply_defaults, TemporaryDirectory
+from airflow.utils.decorators import apply_defaults
+from airflow.utils.file import TemporaryDirectory
 
 
 class BashOperator(BaseOperator):
@@ -22,6 +22,7 @@ class BashOperator(BaseOperator):
         of inheriting the current process environment, which is the default
         behavior.
     :type env: dict
+    :type output_encoding: output encoding of bash command
     """
     template_fields = ('bash_command', 'env')
     template_ext = ('.sh', '.bash',)
@@ -33,6 +34,7 @@ class BashOperator(BaseOperator):
             bash_command,
             xcom_push=False,
             env=None,
+            output_encoding='utf-8',
             *args, **kwargs):
         """
         If xcom_push is True, the last line written to stdout will also
@@ -41,7 +43,8 @@ class BashOperator(BaseOperator):
         super(BashOperator, self).__init__(*args, **kwargs)
         self.bash_command = bash_command
         self.env = env
-        self.xcom_push = xcom_push
+        self.xcom_push_flag = xcom_push
+        self.output_encoding = output_encoding
 
     def execute(self, context):
         """
@@ -70,7 +73,7 @@ class BashOperator(BaseOperator):
                 logging.info("Output:")
                 line = ''
                 for line in iter(sp.stdout.readline, b''):
-                    line = line.decode().strip()
+                    line = line.decode(self.output_encoding).strip()
                     logging.info(line)
                 sp.wait()
                 logging.info("Command exited with "
@@ -79,7 +82,7 @@ class BashOperator(BaseOperator):
                 if sp.returncode:
                     raise AirflowException("Bash command failed")
 
-        if self.xcom_push:
+        if self.xcom_push_flag:
             return line
 
     def on_kill(self):

@@ -1,3 +1,17 @@
+# -*- coding: utf-8 -*-
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
@@ -5,7 +19,7 @@ from __future__ import unicode_literals
 
 from builtins import str
 from past.builtins import basestring
-from collections import defaultdict
+from collections import defaultdict, Counter
 from datetime import datetime
 from itertools import product
 import getpass
@@ -19,9 +33,14 @@ from time import sleep
 from sqlalchemy import Column, Integer, String, DateTime, func, Index, or_
 from sqlalchemy.orm.session import make_transient
 
-from airflow import executors, models, settings, utils
+from airflow import executors, models, settings
 from airflow import configuration as conf
-from airflow.utils import AirflowException, State, LoggingMixin
+from airflow.exceptions import AirflowException
+from airflow.utils.state import State
+from airflow.utils.db import provide_session, pessimistic_connection_handling
+from airflow.utils.email import send_email
+from airflow.utils.logging import LoggingMixin
+from airflow.utils import asciiart
 
 
 Base = models.Base
@@ -219,7 +238,7 @@ class SchedulerJob(BaseJob):
 
         self.heartrate = conf.getint('scheduler', 'SCHEDULER_HEARTBEAT_SEC')
 
-    @utils.provide_session
+    @provide_session
     def manage_slas(self, dag, session=None):
         """
         Finding all tasks that have SLAs defined, and sending alert emails
@@ -308,12 +327,11 @@ class SchedulerJob(BaseJob):
                 self.logger.info(' --------------> ABOUT TO CALL SLA MISS CALL BACK ')
                 dag.sla_miss_callback(dag, task_list, blocking_task_list, slas, blocking_tis)
                 notification_sent = True
-            from airflow import ascii
             email_content = """\
             Here's a list of tasks thas missed their SLAs:
             <pre><code>{task_list}\n<code></pre>
             Blocking tasks:
-            <pre><code>{blocking_task_list}\n{ascii.bug}<code></pre>
+            <pre><code>{blocking_task_list}\n{asciiart.bug}<code></pre>
             """.format(**locals())
             emails = []
             for t in dag.tasks:
@@ -326,7 +344,7 @@ class SchedulerJob(BaseJob):
                         if email not in emails:
                             emails.append(email)
             if emails and len(slas):
-                utils.send_email(
+                send_email(
                     emails,
                     "[airflow] SLA miss on DAG=" + dag.dag_id,
                     email_content)
@@ -383,7 +401,9 @@ class SchedulerJob(BaseJob):
                             DagRun.run_id.like(DagRun.ID_PREFIX+'%')))
             last_scheduled_run = qry.scalar()
             next_run_date = None
-            if not last_scheduled_run:
+            if dag.schedule_interval == '@once' and not last_scheduled_run:
+                next_run_date = datetime.now()
+            elif not last_scheduled_run:
                 # First run
                 TI = models.TaskInstance
                 latest_run = (
@@ -399,8 +419,6 @@ class SchedulerJob(BaseJob):
                     next_run_date = min([t.start_date for t in dag.tasks])
             elif dag.schedule_interval != '@once':
                 next_run_date = dag.following_schedule(last_scheduled_run)
-            elif dag.schedule_interval == '@once' and not last_scheduled_run:
-                next_run_date = datetime.now()
 
             # this structure is necessary to avoid a TypeError from concatenating
             # NoneType
@@ -409,11 +427,15 @@ class SchedulerJob(BaseJob):
             elif next_run_date:
                 schedule_end = dag.following_schedule(next_run_date)
 
+            if next_run_date and dag.end_date and next_run_date > dag.end_date:
+                return
+
             if next_run_date and schedule_end and schedule_end <= datetime.now():
                 next_run = DagRun(
                     dag_id=dag.dag_id,
                     run_id='scheduled__' + next_run_date.isoformat(),
                     execution_date=next_run_date,
+                    start_date=datetime.now(),
                     state=State.RUNNING,
                     external_trigger=False
                 )
@@ -498,7 +520,7 @@ class SchedulerJob(BaseJob):
 
         session.close()
 
-    @utils.provide_session
+    @provide_session
     def prioritize_queued(self, session, executor, dagbag):
         # Prioritizing queued task instances
 
@@ -525,7 +547,7 @@ class SchedulerJob(BaseJob):
             else:
                 d[ti.pool].append(ti)
 
-        overloaded_dags = set()
+        dag_blacklist = set(dagbag.paused_dags())
         for pool, tis in list(d.items()):
             if not pool:
                 # Arbitrary:
@@ -567,8 +589,10 @@ class SchedulerJob(BaseJob):
                     self.logger.info("Pickling DAG {}".format(dag))
                     pickle_id = dag.pickle(session).id
 
-                if dag.dag_id in overloaded_dags or dag.concurrency_reached:
-                    overloaded_dags.add(dag.dag_id)
+                if dag.dag_id in dag_blacklist:
+                    continue
+                if dag.concurrency_reached:
+                    dag_blacklist.add(dag.dag_id)
                     continue
                 if ti.are_dependencies_met():
                     executor.queue_task_instance(ti, pickle_id=pickle_id)
@@ -589,7 +613,7 @@ class SchedulerJob(BaseJob):
 
         signal.signal(signal.SIGINT, signal_handler)'''
 
-        utils.pessimistic_connection_handling()
+        pessimistic_connection_handling()
 
         logging.basicConfig(level=logging.DEBUG)
         self.logger.info("Starting the scheduler")
@@ -715,6 +739,7 @@ class BackfillJob(BaseJob):
 
         executor = self.executor
         executor.start()
+        executor_fails = Counter()
 
         # Build a list of all instances to run
         tasks_to_run = {}
@@ -766,12 +791,21 @@ class BackfillJob(BaseJob):
                 if (
                         ti.state in (State.FAILED, State.SKIPPED) or
                         state == State.FAILED):
-                    if ti.state == State.FAILED or state == State.FAILED:
+                    # executor reports failure; task reports running
+                    if ti.state == State.RUNNING and state == State.FAILED:
+                        msg = (
+                            'Executor reports that task instance {} failed '
+                            'although the task says it is running.'.format(key))
+                        self.logger.error(msg)
+                        ti.handle_failure(msg)
+                    # executor and task report failure
+                    elif ti.state == State.FAILED or state == State.FAILED:
                         failed.append(key)
-                        self.logger.error("Task instance " + str(key) + " failed")
+                        self.logger.error("Task instance {} failed".format(key))
+                    # task reports skipped
                     elif ti.state == State.SKIPPED:
                         wont_run.append(key)
-                        self.logger.error("Skipping " + str(key) + " failed")
+                        self.logger.error("Skipping {} ".format(key))
                     tasks_to_run.pop(key)
                     # Removing downstream tasks that also shouldn't run
                     for t in self.dag.get_task(task_id).get_flat_relatives(
@@ -780,9 +814,11 @@ class BackfillJob(BaseJob):
                         if key in tasks_to_run:
                             wont_run.append(key)
                             tasks_to_run.pop(key)
+                # executor and task report success
                 elif ti.state == State.SUCCESS and state == State.SUCCESS:
                     succeeded.append(key)
                     tasks_to_run.pop(key)
+                # executor reports success but task does not -- this is weird
                 elif (
                         ti.state not in (State.SUCCESS, State.QUEUED) and
                         state == State.SUCCESS):
@@ -792,6 +828,20 @@ class BackfillJob(BaseJob):
                         "in normal circumstances. Task state is '{}',"
                         "reported state is '{}'. TI is {}"
                         "".format(ti.state, state, ti))
+
+                    # if the executor fails 3 or more times, stop trying to
+                    # run the task
+                    executor_fails[key] += 1
+                    if executor_fails[key] >= 3:
+                        msg = (
+                            'The airflow run command failed to report an '
+                            'error for task {} three or more times. The task '
+                            'is being marked as failed. This is very unusual '
+                            'and probably means that an error is taking place '
+                            'before the task even starts.'.format(key))
+                        self.logger.error(msg)
+                        ti.handle_failure(msg)
+                        tasks_to_run.pop(key)
 
             msg = (
                 "[backfill progress] "

@@ -3,19 +3,26 @@ from __future__ import division
 from __future__ import print_function
 from __future__ import unicode_literals
 
-from future import standard_library
-
-standard_library.install_aliases()
-from builtins import str
-from configparser import ConfigParser
+import copy
 import errno
 import logging
 import os
 import subprocess
 
+from future import standard_library
+standard_library.install_aliases()
+
+from builtins import str
+from collections import OrderedDict
+from configparser import ConfigParser
+
+
+class AirflowConfigException(Exception):
+    pass
+
 try:
     from cryptography.fernet import Fernet
-except:
+except ImportError:
     pass
 
 
@@ -42,6 +49,7 @@ def expand_env_var(env_var):
         else:
             env_var = interpolated
 
+
 def run_command(command):
     """
     Runs command and returns stdout
@@ -51,16 +59,13 @@ def run_command(command):
     output, stderr = process.communicate()
 
     if process.returncode != 0:
-        raise AirflowException(
+        raise AirflowConfigException(
             "Cannot execute {}. Error code is: {}. Output: {}, Stderr: {}"
-            .format(cmd, process.returncode, output, stderr)
+            .format(command, process.returncode, output, stderr)
         )
 
     return output
 
-
-class AirflowConfigException(Exception):
-    pass
 
 defaults = {
     'core': {
@@ -70,17 +75,23 @@ defaults = {
         'plugins_folder': None,
         'security': None,
         'donot_pickle': False,
-        's3_log_folder': '',
+        'remote_base_log_folder': '',
+        'remote_log_conn_id': '',
         'encrypt_s3_logs': False,
+        's3_log_folder': '', # deprecated!
         'dag_concurrency': 16,
         'max_active_runs_per_dag': 16,
         'executor': 'SequentialExecutor',
         'dags_are_paused_at_creation': False,
+        'sql_alchemy_pool_size': 5,
+        'sql_alchemy_pool_recycle': 3600,
+        'dagbag_import_timeout': 30,
     },
     'webserver': {
         'base_url': 'http://localhost:8080',
         'web_server_host': '0.0.0.0',
         'web_server_port': '8080',
+        'web_server_worker_timeout': 120,
         'authenticate': False,
         'filter_by_owner': False,
         'demo_mode': False,
@@ -102,8 +113,12 @@ defaults = {
         'default_queue': 'default',
         'flower_port': '5555'
     },
+    'email': {
+        'email_backend': 'airflow.utils.send_email_smtp',
+    },
     'smtp': {
         'smtp_starttls': True,
+        'smtp_ssl': False,
         'smtp_user': '',
         'smtp_password': '',
     },
@@ -130,9 +145,17 @@ dags_folder = {AIRFLOW_HOME}/dags
 
 # The folder where airflow should store its log files. This location
 base_log_folder = {AIRFLOW_HOME}/logs
-# An S3 location can be provided for log backups
-# For S3, use the full URL to the base folder (starting with "s3://...")
-s3_log_folder = None
+
+# Airflow can store logs remotely in AWS S3 or Google Cloud Storage. Users
+# must supply a remote location URL (starting with either 's3://...' or
+# 'gs://...') and an Airflow connection id that provides access to the storage
+# location.
+remote_base_log_folder = None
+remote_log_conn_id = None
+# Use server-side encryption for logs stored in S3
+encrypt_s3_logs = False
+# deprecated option for remote log storage, use remote_base_log_folder instead!
+# s3_log_folder = None
 
 # The executor class that airflow should use. Choices include
 # SequentialExecutor, LocalExecutor, CeleryExecutor
@@ -142,6 +165,15 @@ executor = SequentialExecutor
 # SqlAlchemy supports many different database engine, more information
 # their website
 sql_alchemy_conn = sqlite:///{AIRFLOW_HOME}/airflow.db
+
+# The SqlAlchemy pool size is the maximum number of database connections
+# in the pool.
+sql_alchemy_pool_size = 5
+
+# The SqlAlchemy pool recycle is the number of seconds a connection
+# can be idle in the pool before it is invalidated. This config does
+# not apply to sqlite.
+sql_alchemy_pool_recycle = 3600
 
 # The amount of parallelism as a setting to the executor. This defines
 # the max number of task instances that should run simultaneously
@@ -171,9 +203,12 @@ fernet_key = {FERNET_KEY}
 # Whether to disable pickling dags
 donot_pickle = False
 
+# How long before timing out a python file import while filling the DagBag
+dagbag_import_timeout = 30
+
 [webserver]
 # The base url of your website as airflow cannot guess what domain or
-# cname you are using. This is use in automated emails that
+# cname you are using. This is used in automated emails that
 # airflow sends to point links to the right web server
 base_url = http://localhost:8080
 
@@ -182,6 +217,9 @@ web_server_host = 0.0.0.0
 
 # The port on which to run the web server
 web_server_port = 8080
+
+# The time the gunicorn webserver waits before timing out on a worker
+web_server_worker_timeout = 120
 
 # Secret key used to run your flask app
 secret_key = temporary_key
@@ -196,11 +234,15 @@ worker_class = sync
 # Expose the configuration file in the web server
 expose_config = true
 
-# Set to true to turn on authentication : http://pythonhosted.org/airflow/installation.html#web-authentication
+# Set to true to turn on authentication:
+# http://pythonhosted.org/airflow/installation.html#web-authentication
 authenticate = False
 
 # Filter the list of dags by owner name (requires authentication to be enabled)
 filter_by_owner = False
+
+[email]
+email_backend = airflow.utils.send_email_smtp
 
 [smtp]
 # If you want airflow to send emails on retries, failure, and you want to
@@ -208,6 +250,7 @@ filter_by_owner = False
 # server here
 smtp_host = localhost
 smtp_starttls = True
+smtp_ssl = False
 smtp_user = airflow
 smtp_port = 25
 smtp_password = airflow
@@ -287,8 +330,10 @@ task_memory = 256
 checkpoint = False
 
 # Failover timeout in milliseconds.
-# When checkpointing is enabled and this option is set, Mesos waits until the configured timeout for
-# the MesosExecutor framework to re-register after a failover. Mesos shuts down running tasks if the
+# When checkpointing is enabled and this option is set, Mesos waits
+# until the configured timeout for
+# the MesosExecutor framework to re-register after a failover. Mesos
+# shuts down running tasks if the
 # MesosExecutor framework fails to re-register within this timeframe.
 # failover_timeout = 604800
 
@@ -321,6 +366,9 @@ base_url = http://localhost:8080
 web_server_host = 0.0.0.0
 web_server_port = 8080
 
+[email]
+email_backend = airflow.utils.send_email_smtp
+
 [smtp]
 smtp_host = localhost
 smtp_user = airflow
@@ -351,6 +399,7 @@ class ConfigParserWithDefaults(ConfigParser):
     # store password on boxes in text files.
     as_command_stdout = {
         ('core', 'sql_alchemy_conn'),
+        ('core', 'fernet_key'),
         ('celery', 'broker_url'),
         ('celery', 'celery_result_backend')
     }
@@ -361,36 +410,51 @@ class ConfigParserWithDefaults(ConfigParser):
         self.is_validated = False
 
     def _validate(self):
-        if self.get("core", "executor") != 'SequentialExecutor' \
-                and "sqlite" in self.get('core', 'sql_alchemy_conn'):
+        if (
+                self.get("core", "executor") != 'SequentialExecutor' and
+                "sqlite" in self.get('core', 'sql_alchemy_conn')):
             raise AirflowConfigException("error: cannot use sqlite with the {}".
-                                                       format(self.get('core', 'executor')))
+                format(self.get('core', 'executor')))
 
         self.is_validated = True
 
-    def get(self, section, key, **kwargs):
-        section = str(section).lower()
-        key = str(key).lower()
-        fallback_key = key + '_cmd'
-        d = self.defaults
-
-        # environment variables get precedence
+    def _get_env_var_option(self, section, key):
         # must have format AIRFLOW__{SECTION}__{KEY} (note double underscore)
         env_var = 'AIRFLOW__{S}__{K}'.format(S=section.upper(), K=key.upper())
         if env_var in os.environ:
             return expand_env_var(os.environ[env_var])
 
-        # ...then the config file
-        elif self.has_option(section, key):
-            return expand_env_var(ConfigParser.get(self, section, key, **kwargs))
-
-        elif ((section, key) in ConfigParserWithDefaults.as_command_stdout 
-            and self.has_option(section, fallback_key)):
+    def _get_cmd_option(self, section, key):
+        fallback_key = key + '_cmd'
+        if (
+                (section, key) in ConfigParserWithDefaults.as_command_stdout and
+                self.has_option(section, fallback_key)):
             command = self.get(section, fallback_key)
             return run_command(command)
 
+    def get(self, section, key, **kwargs):
+        section = str(section).lower()
+        key = str(key).lower()
+
+        d = self.defaults
+
+        # first check environment variables
+        option = self._get_env_var_option(section, key)
+        if option:
+            return option
+
+        # ...then the config file
+        if self.has_option(section, key):
+            return expand_env_var(
+                ConfigParser.get(self, section, key, **kwargs))
+
+        # ...then commands
+        option = self._get_cmd_option(section, key)
+        if option:
+            return option
+
         # ...then the defaults
-        elif section in d and key in d[section]:
+        if section in d and key in d[section]:
             return expand_env_var(d[section][key])
 
         else:
@@ -421,6 +485,68 @@ class ConfigParserWithDefaults(ConfigParser):
     def read(self, filenames):
         ConfigParser.read(self, filenames)
         self._validate()
+
+    def as_dict(self, display_source=False, display_sensitive=False):
+        """
+        Returns the current configuration as an OrderedDict of OrderedDicts.
+        :param display_source: If False, the option value is returned. If True,
+            a tuple of (option_value, source) is returned. Source is either
+            'airflow.cfg' or 'default'.
+        :type display_source: bool
+        :param display_sensitive: If True, the values of options set by env
+            vars and bash commands will be displayed. If False, those options
+            are shown as '< hidden >'
+        :type display_sensitive: bool
+        """
+        cfg = copy.deepcopy(self._sections)
+
+        # remove __name__ (affects Python 2 only)
+        for options in cfg.values():
+            options.pop('__name__', None)
+
+        # add source
+        if display_source:
+            for section in cfg:
+                for k, v in cfg[section].items():
+                    cfg[section][k] = (v, 'airflow.cfg')
+
+        # add env vars and overwrite because they have priority
+        for ev in [ev for ev in os.environ if ev.startswith('AIRFLOW__')]:
+            try:
+                _, section, key = ev.split('__')
+                opt = self._get_env_var_option(section, key)
+            except ValueError:
+                opt = None
+            if opt:
+                if not display_sensitive:
+                    opt = '< hidden >'
+                if display_source:
+                    opt = (opt, 'env var')
+                cfg.setdefault(section.lower(), OrderedDict()).update(
+                    {key.lower(): opt})
+
+        # add bash commands
+        for (section, key) in ConfigParserWithDefaults.as_command_stdout:
+            opt = self._get_cmd_option(section, key)
+            if opt:
+                if not display_sensitive:
+                    opt = '< hidden >'
+                if display_source:
+                    opt = (opt, 'bash cmd')
+                cfg.setdefault(section, OrderedDict()).update({key: opt})
+
+        # add defaults
+        for section in sorted(self.defaults):
+            for key in sorted(self.defaults[section].keys()):
+                if key not in cfg.setdefault(section, OrderedDict()):
+                    opt = str(self.defaults[section][key])
+                    if display_source:
+                        cfg[section][key] = (opt, 'default')
+                    else:
+                        cfg[section][key] = opt
+
+        return cfg
+
 
 def mkdir_p(path):
     try:
@@ -470,11 +596,9 @@ if not os.path.isfile(TEST_CONFIG_FILE):
         f.write(parameterized_config(TEST_CONFIG))
 
 if not os.path.isfile(AIRFLOW_CONFIG):
-    """
-    These configuration options are used to generate a default configuration
-    when it is missing. The right way to change your configuration is to alter
-    your configuration file, not this code.
-    """
+    # These configuration options are used to generate a default configuration
+    # when it is missing. The right way to change your configuration is to alter
+    # your configuration file, not this code.
     logging.info("Creating new airflow config file in: " + AIRFLOW_CONFIG)
     with open(AIRFLOW_CONFIG, 'w') as f:
         f.write(parameterized_config(DEFAULT_CONFIG))
@@ -493,6 +617,7 @@ conf.read(AIRFLOW_CONFIG)
 def get(section, key, **kwargs):
     return conf.get(section, key, **kwargs)
 
+
 def getboolean(section, key):
     return conf.getboolean(section, key)
 
@@ -508,15 +633,23 @@ def getint(section, key):
 def has_option(section, key):
     return conf.has_option(section, key)
 
+
 def remove_option(section, option):
     return conf.remove_option(section, option)
 
-def set(section, option, value):
+
+def as_dict(display_source=False, display_sensitive=False):
+    return conf.as_dict(
+        display_source=display_source, display_sensitive=display_sensitive)
+as_dict.__doc__ = conf.as_dict.__doc__
+
+
+def set(section, option, value):  # noqa
     return conf.set(section, option, value)
 
 ########################
 # convenience method to access config entries
 
+
 def get_dags_folder():
     return os.path.expanduser(get('core', 'DAGS_FOLDER'))
-

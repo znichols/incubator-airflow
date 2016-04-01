@@ -2,13 +2,13 @@ import logging
 
 from airflow.contrib.hooks.gcs_hook import GoogleCloudStorageHook
 from airflow.models import BaseOperator
-from airflow.utils import apply_defaults
+from airflow.utils.decorators import apply_defaults
 
 class GoogleCloudStorageDownloadOperator(BaseOperator):
     """
     Downloads a file from Google Cloud Storage.
     """
-    template_fields = ('bucket','object',)
+    template_fields = ('bucket','object','filename',)
     template_ext = ('.sql',)
     ui_color = '#f0eee4'
 

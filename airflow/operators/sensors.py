@@ -8,11 +8,11 @@ from urllib.parse import urlparse
 from time import sleep
 
 from airflow import hooks, settings
+from airflow.exceptions import AirflowException, AirflowSensorTimeout
 from airflow.models import BaseOperator, TaskInstance, Connection as DB
 from airflow.hooks import BaseHook
-from airflow.utils import State
-from airflow.utils import (
-    apply_defaults, AirflowException, AirflowSensorTimeout)
+from airflow.utils.state import State
+from airflow.utils.decorators import apply_defaults
 
 
 class BaseSensorOperator(BaseOperator):
@@ -290,10 +290,10 @@ class WebHdfsSensor(BaseSensorOperator):
             *args, **kwargs):
         super(WebHdfsSensor, self).__init__(*args, **kwargs)
         self.filepath = filepath
-        self.hdfs_conn_id = webhdfs_conn_id
+        self.webhdfs_conn_id = webhdfs_conn_id
 
     def poke(self, context):
-        c = hooks.WebHDFSHook(self.webhdfs_conn_id).get_conn()
+        c = hooks.WebHDFSHook(self.webhdfs_conn_id)
         logging.info(
             'Poking for file {self.filepath} '.format(**locals()))
         return c.check_for_path(hdfs_path=self.filepath)
