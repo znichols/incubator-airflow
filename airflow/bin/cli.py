@@ -76,6 +76,7 @@ def backfill(args, dag=None):
             end_date=args.end_date,
             mark_success=args.mark_success,
             include_adhoc=args.include_adhoc,
+            force=args.force,
             local=args.local,
             donot_pickle=(args.donot_pickle or
                           conf.getboolean('core', 'donot_pickle')),
@@ -629,7 +630,7 @@ class CLIFactory(object):
             'func': backfill,
             'help': "Run subsections of a DAG for a specified date range",
             'args': (
-                'dag_id', 'task_regex', 'start_date', 'end_date',
+                'dag_id', 'task_regex', 'start_date', 'end_date', 'force',
                 'mark_success', 'local', 'donot_pickle', 'include_adhoc',
                 'bf_ignore_dependencies', 'bf_ignore_first_depends_on_past',
                 'subdir', 'pool', 'dry_run')
