@@ -513,6 +513,11 @@ class SchedulerJob(BaseJob):
             elif ti.is_runnable(flag_upstream_failed=True):
                 self.logger.debug('Firing task: {}'.format(ti))
                 executor.queue_task_instance(ti, pickle_id=pickle_id)
+            elif ti.is_premature():
+                continue
+            else:
+                self.logger.debug('Adding task: {} to the COULD_NOT_RUN set'.format(ti))
+                could_not_run.add(ti)
 
         # Releasing the lock
         self.logger.debug("Unlocking DAG (scheduler_lock)")
