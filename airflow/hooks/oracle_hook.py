@@ -7,6 +7,7 @@ from datetime import datetime
 import numpy
 import logging
 
+
 class OracleHook(DbApiHook):
     """
     Interact with Oracle SQL.

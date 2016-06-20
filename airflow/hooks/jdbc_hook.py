@@ -1,10 +1,9 @@
 from builtins import str
-__author__ = 'janomar'
 
-import logging
 import jaydebeapi
 
 from airflow.hooks.dbapi_hook import DbApiHook
+
 
 class JdbcHook(DbApiHook):
     """

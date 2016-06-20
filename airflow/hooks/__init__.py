@@ -1,5 +1,38 @@
+# -*- coding: utf-8 -*-
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Only import Core Airflow Operators that don't have extra requirements.
+# All other operators must be imported directly.
+from .base_hook import BaseHook
+from .dbapi_hook import DbApiHook
+from .http_hook import HttpHook
+from .sqlite_hook import SqliteHook
+
+# ------------------------------------------------------------------------
+#
+# #TODO #FIXME Airflow 2.0
+#
+# Old import machinary below.
+#
+# This is deprecated but should be kept until Airflow 2.0
+# for compatibility.
+#
+# ------------------------------------------------------------------------
+
 # Imports the hooks dynamically while keeping the package API clean,
 # abstracting the underlying modules
+
 
 from airflow.utils.helpers import import_module_attrs as _import_module_attrs
 from airflow.hooks.base_hook import BaseHook  # noqa to expose in package
