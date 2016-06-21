@@ -1348,7 +1348,7 @@ class Airflow(BaseView):
             form=form,
             chart=chart,
         )
-    
+
     @expose('/landing_times')
     @login_required
     @wwwutils.action_logging
