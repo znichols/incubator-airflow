@@ -664,6 +664,12 @@ configuration files, it allows you to expose the configuration that led
 to the related tasks in Airflow.
 
 .. code:: python
+    """
+    ### My great DAG
+    """
+
+    dag = DAG('my_dag', default_args=default_args)
+    dag.doc_md = __doc__
 
     t = BashOperator("foo", dag=dag)
     t.doc_md = """\
