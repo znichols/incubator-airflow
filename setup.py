@@ -104,7 +104,6 @@ devel_all = devel + all_dbs + doc + samba + s3 + slack + crypto + oracle + docke
 
 
 def do_setup():
-    write_version()
     setup(
         name='airflow',
         description='Programmatically author, schedule and monitor data pipelines',
