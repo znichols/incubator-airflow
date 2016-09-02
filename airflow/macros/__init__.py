@@ -41,6 +41,11 @@ def ds_add(ds, days):
         ds = ds + timedelta(days)
     return ds.isoformat()[:10]
 
+def ds_most_recent_day_of_week(ds, day_of_week):
+    ds = datetime.strptime(ds, '%Y-%m-%d').date()
+    while (ds.weekday() != day_of_week):
+        ds -= timedelta(days=1)
+    return ds.isoformat()
 
 def ds_format(ds, input_format, output_format):
     """
